@@ -11,8 +11,8 @@ android {
         applicationId = "com.vincent.tellopilot"
         minSdk = 26
         targetSdk = 34
-        versionCode = 2
-        versionName = "2.0"
+        versionCode = 3
+        versionName = "3.0"
     }
 
     signingConfigs {
@@ -30,6 +30,12 @@ android {
         getByName("debug") {
             signingConfig = signingConfigs.getByName("debug")
         }
+    }
+
+    // llama-server est livré comme "bibliothèque native" : il doit être extrait sur
+    // le disque pour pouvoir être exécuté.
+    packaging {
+        jniLibs { useLegacyPackaging = true }
     }
 
     compileOptions {

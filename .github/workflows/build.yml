@@ -8,6 +8,9 @@ on:
 permissions:
   contents: write
 
+env:
+  LLAMA_TAG: b12191
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -19,18 +22,66 @@ jobs:
           distribution: temurin
           java-version: "17"
 
+      # ---------------------------------------------------------------- moteur IA
+      # llama-server (llama.cpp) compilé pour Android arm64, embarqué dans l'APK.
+      - name: Cache llama-server Android
+        id: llama-cache
+        uses: actions/cache@v4
+        with:
+          path: llama-bin
+          key: llama-server-android-${{ env.LLAMA_TAG }}-v1
+
+      - name: Compiler llama-server pour Android
+        if: steps.llama-cache.outputs.cache-hit != 'true'
+        run: |
+          set -e
+          NDK="${ANDROID_NDK_LATEST_HOME:-$ANDROID_NDK_HOME}"
+          echo "NDK: $NDK"
+          git clone --depth 1 --branch "$LLAMA_TAG" https://github.com/ggml-org/llama.cpp /tmp/llama.cpp
+          cmake -S /tmp/llama.cpp -B /tmp/build-android \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=arm64-v8a \
+            -DANDROID_PLATFORM=android-28 \
+            -DANDROID_STL=c++_static \
+            -DGGML_CPU_KLEIDIAI=ON \
+            -DGGML_NATIVE=OFF \
+            -DGGML_OPENMP=OFF \
+            -DGGML_LLAMAFILE=OFF \
+            -DLLAMA_OPENSSL=OFF \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DLLAMA_BUILD_TESTS=OFF \
+            -DLLAMA_BUILD_EXAMPLES=OFF \
+            -DLLAMA_BUILD_SERVER=ON \
+            -DLLAMA_BUILD_UI=OFF \
+            -DLLAMA_USE_PREBUILT_UI=OFF
+          cmake --build /tmp/build-android --target llama-server -j "$(nproc)"
+          mkdir -p llama-bin
+          "$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip" \
+            -o llama-bin/libllamaserver.so /tmp/build-android/bin/llama-server
+
+      - name: Embarquer llama-server dans l'APK
+        run: |
+          mkdir -p app/src/main/jniLibs/arm64-v8a
+          cp llama-bin/libllamaserver.so app/src/main/jniLibs/arm64-v8a/
+          file app/src/main/jniLibs/arm64-v8a/libllamaserver.so
+          ls -la app/src/main/jniLibs/arm64-v8a/
+
+      # ---------------------------------------------------------------- app
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.7"
 
-      - name: Tests du protocole
+      - name: Tests
         run: gradle :app:testDebugUnitTest --no-daemon
 
       - name: Compiler l'APK
         run: gradle :app:assembleDebug --no-daemon
 
-      - name: Renommer
-        run: cp app/build/outputs/apk/debug/app-debug.apk TelloPilot.apk
+      - name: Vérifier que le moteur IA est dans l'APK
+        run: |
+          cp app/build/outputs/apk/debug/app-debug.apk TelloPilot.apk
+          unzip -l TelloPilot.apk | grep libllamaserver.so
 
       - uses: actions/upload-artifact@v4
         with:
