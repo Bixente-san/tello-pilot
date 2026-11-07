@@ -30,6 +30,24 @@ Elle parle au drone avec le **protocole binaire natif**, celui qu'utilise l'app 
 | 360° | Il fait un tour complet sur place en filmant |
 | Grand angle | Il recule et monte en filmant |
 
+### Pilote IA (d1-2B, 100 % local)
+Tu donnes une consigne en langage naturel, par exemple « va vers la porte ». Le modèle de décision **d1-2B** de Liquid AI
+pilote alors le drone **pas à pas** :
+1. le drone s'immobilise ;
+2. d1 regarde l'image et choisit une action parmi 9 (avancer, tourner, monter, glisser, reculer, terminé…) ;
+3. le drone exécute un petit mouvement, puis le cycle recommence.
+
+- Le modèle tourne **sur le téléphone**, avec `llama-server` (llama.cpp) compilé pour Android et embarqué dans l'APK.
+  Il ne faut aucune connexion Internet pendant le vol.
+- Premier lancement : bouton IA à droite de l'écran, puis « Télécharger le modèle ». Il pèse 1,3 Go et se télécharge **en Wi-Fi avec Internet** (pas celui du drone).
+- « Analyser l'image » montre la décision de d1 sans faire bouger le drone. C'est pratique pour tester les consignes au sol.
+- Sécurités :
+  - vitesse lente forcée ;
+  - 40 étapes au maximum ;
+  - altitude maximale respectée ;
+  - arrêt si la batterie tombe sous 15 % ou si la liaison est perdue ;
+  - **reprise en main immédiate dès que tu touches un joystick**.
+
 ### Caméra
 - **Photo** : 5 Mpx, prise directement par le drone.
 - **Vidéo** : enregistrée en MP4, à la qualité d'origine.
@@ -42,6 +60,7 @@ Elle parle au drone avec le **protocole binaire natif**, celui qu'utilise l'app 
 ## Technique
 - `drone/` contient le protocole : paquets, CRC, télémétrie, journaux IMU et transfert des photos. Il s'appuie sur les travaux open source **TelloPy** et **Gobot** (licence Apache-2.0).
 - `video/` reconstitue le flux H.264 image par image et le décode avec le décodeur matériel du téléphone. Un chien de garde relance la vidéo si l'image se fige, et l'enregistrement MP4 se fait sans ré-encodage.
+- `ai/` contient le pilote IA : téléchargement du modèle, lancement de llama-server, appels à l'API `/v1/systemone` et boucle de navigation.
 - `ui/` contient le HUD, entièrement dessiné en code.
 
 GitHub Actions lance les tests du protocole, compile l'APK puis le publie dans les Releases, à chaque push sur `main`.
