@@ -123,9 +123,13 @@ class StatusBar(c: Context) : View(c) {
         var x = pad
         c.drawText("TELLO", x, cy + dp(5f), p)
         x += p.measureText("TELLO") + dp(4f)
-        p.color = Hud.MUTED; p.typeface = Hud.LABEL; p.textSize = dp(10f)
-        c.drawText("PILOT", x, cy + dp(5f), p)
-        x += p.measureText("PILOT") + dp(14f)
+        val roomy = width >= dp(800f)
+        if (roomy) {
+            p.color = Hud.MUTED; p.typeface = Hud.LABEL; p.textSize = dp(10f)
+            c.drawText("PILOT", x, cy + dp(5f), p)
+            x += p.measureText("PILOT")
+        }
+        x += dp(14f)
 
         // Pastille d'état
         val (label, col) = when (state) {
@@ -154,7 +158,7 @@ class StatusBar(c: Context) : View(c) {
         x = drawWifi(c, x, cy) - dp(18f)
         x = drawSpeedChip(c, x, cy) - dp(20f)
         val connected = state == State.READY || state == State.FLYING || state == State.LANDING
-        x = drawValue(c, x, cy, "TEMPS", "%d:%02d".format(flightSeconds / 60, flightSeconds % 60), connected) - dp(18f)
+        if (roomy) x = drawValue(c, x, cy, "TEMPS", "%d:%02d".format(flightSeconds / 60, flightSeconds % 60), connected) - dp(18f)
         x = drawValue(c, x, cy, "VIT", "%.1f m/s".format(speed), connected) - dp(18f)
         drawValue(c, x, cy, "ALT", "%.1f m".format(heightM), connected)
     }
@@ -335,8 +339,8 @@ class StickLayer(c: Context) : View(c) {
     private var sx = 0f; private var sy = 0f; private var ex = 0f; private var ey = 0f
 
     override fun onSizeChanged(w: Int, h: Int, ow: Int, oh: Int) {
-        left.homeX = dp(150f); left.homeY = h - dp(118f)
-        right.homeX = w - dp(150f); right.homeY = h - dp(118f)
+        left.homeX = dp(168f); left.homeY = h - dp(112f)
+        right.homeX = w - dp(168f); right.homeY = h - dp(112f)
     }
 
     @SuppressLint("ClickableViewAccessibility")
