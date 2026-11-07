@@ -1,0 +1,237 @@
+package com.vincent.tellopilot.drone
+
+import kotlin.math.asin
+import kotlin.math.atan2
+import kotlin.math.sqrt
+
+/**
+ * Protocole binaire "privé" du Tello, celui qu'utilise l'app officielle.
+ * Format d'un paquet :
+ *   0xCC | taille<<3 (u16 LE) | crc8(3 premiers octets) | type | commande (u16 LE)
+ *   | séquence (u16 LE) | données | crc16 (u16 LE)
+ *
+ * Références (open source) : TelloPy (Apache-2.0) et Gobot (Apache-2.0),
+ * qui documentent ce protocole par rétro-ingénierie.
+ */
+object Protocol {
+    const val WIFI_MSG = 0x001a
+    const val VIDEO_ENCODER_RATE_CMD = 0x0020
+    const val VIDEO_START_CMD = 0x0025
+    const val TAKE_PICTURE_CMD = 0x0030
+    const val VIDEO_MODE_CMD = 0x0031
+    const val LIGHT_MSG = 0x0035
+    const val TIME_CMD = 0x0046
+    const val STICK_CMD = 0x0050
+    const val TAKEOFF_CMD = 0x0054
+    const val LAND_CMD = 0x0055
+    const val FLIGHT_MSG = 0x0056
+    const val SET_ALT_LIMIT_CMD = 0x0058
+    const val FLIP_CMD = 0x005c
+    const val THROW_AND_GO_CMD = 0x005d
+    const val PALM_LAND_CMD = 0x005e
+    const val FILE_SIZE = 0x0062
+    const val FILE_DATA = 0x0063
+    const val FILE_COMPLETE = 0x0064
+    const val LOG_HEADER_MSG = 0x1050
+    const val LOG_DATA_MSG = 0x1051
+    const val BOUNCE_CMD = 0x1053
+
+    /** Port local sur lequel le drone envoie la vidéo (annoncé dans conn_req). */
+    const val VIDEO_PORT = 6038
+
+    private val CRC8 = intArrayOf(
+        0x00, 0x5E, 0xBC, 0xE2, 0x61, 0x3F, 0xDD, 0x83, 0xC2, 0x9C, 0x7E, 0x20,
+        0xA3, 0xFD, 0x1F, 0x41, 0x9D, 0xC3, 0x21, 0x7F, 0xFC, 0xA2, 0x40, 0x1E,
+        0x5F, 0x01, 0xE3, 0xBD, 0x3E, 0x60, 0x82, 0xDC, 0x23, 0x7D, 0x9F, 0xC1,
+        0x42, 0x1C, 0xFE, 0xA0, 0xE1, 0xBF, 0x5D, 0x03, 0x80, 0xDE, 0x3C, 0x62,
+        0xBE, 0xE0, 0x02, 0x5C, 0xDF, 0x81, 0x63, 0x3D, 0x7C, 0x22, 0xC0, 0x9E,
+        0x1D, 0x43, 0xA1, 0xFF, 0x46, 0x18, 0xFA, 0xA4, 0x27, 0x79, 0x9B, 0xC5,
+        0x84, 0xDA, 0x38, 0x66, 0xE5, 0xBB, 0x59, 0x07, 0xDB, 0x85, 0x67, 0x39,
+        0xBA, 0xE4, 0x06, 0x58, 0x19, 0x47, 0xA5, 0xFB, 0x78, 0x26, 0xC4, 0x9A,
+        0x65, 0x3B, 0xD9, 0x87, 0x04, 0x5A, 0xB8, 0xE6, 0xA7, 0xF9, 0x1B, 0x45,
+        0xC6, 0x98, 0x7A, 0x24, 0xF8, 0xA6, 0x44, 0x1A, 0x99, 0xC7, 0x25, 0x7B,
+        0x3A, 0x64, 0x86, 0xD8, 0x5B, 0x05, 0xE7, 0xB9, 0x8C, 0xD2, 0x30, 0x6E,
+        0xED, 0xB3, 0x51, 0x0F, 0x4E, 0x10, 0xF2, 0xAC, 0x2F, 0x71, 0x93, 0xCD,
+        0x11, 0x4F, 0xAD, 0xF3, 0x70, 0x2E, 0xCC, 0x92, 0xD3, 0x8D, 0x6F, 0x31,
+        0xB2, 0xEC, 0x0E, 0x50, 0xAF, 0xF1, 0x13, 0x4D, 0xCE, 0x90, 0x72, 0x2C,
+        0x6D, 0x33, 0xD1, 0x8F, 0x0C, 0x52, 0xB0, 0xEE, 0x32, 0x6C, 0x8E, 0xD0,
+        0x53, 0x0D, 0xEF, 0xB1, 0xF0, 0xAE, 0x4C, 0x12, 0x91, 0xCF, 0x2D, 0x73,
+        0xCA, 0x94, 0x76, 0x28, 0xAB, 0xF5, 0x17, 0x49, 0x08, 0x56, 0xB4, 0xEA,
+        0x69, 0x37, 0xD5, 0x8B, 0x57, 0x09, 0xEB, 0xB5, 0x36, 0x68, 0x8A, 0xD4,
+        0x95, 0xCB, 0x29, 0x77, 0xF4, 0xAA, 0x48, 0x16, 0xE9, 0xB7, 0x55, 0x0B,
+        0x88, 0xD6, 0x34, 0x6A, 0x2B, 0x75, 0x97, 0xC9, 0x4A, 0x14, 0xF6, 0xA8,
+        0x74, 0x2A, 0xC8, 0x96, 0x15, 0x4B, 0xA9, 0xF7, 0xB6, 0xE8, 0x0A, 0x54,
+        0xD7, 0x89, 0x6B, 0x35,
+    )
+
+    private val CRC16 = intArrayOf(
+        0x0000, 0x1189, 0x2312, 0x329B, 0x4624, 0x57AD, 0x6536, 0x74BF,
+        0x8C48, 0x9DC1, 0xAF5A, 0xBED3, 0xCA6C, 0xDBE5, 0xE97E, 0xF8F7,
+        0x1081, 0x0108, 0x3393, 0x221A, 0x56A5, 0x472C, 0x75B7, 0x643E,
+        0x9CC9, 0x8D40, 0xBFDB, 0xAE52, 0xDAED, 0xCB64, 0xF9FF, 0xE876,
+        0x2102, 0x308B, 0x0210, 0x1399, 0x6726, 0x76AF, 0x4434, 0x55BD,
+        0xAD4A, 0xBCC3, 0x8E58, 0x9FD1, 0xEB6E, 0xFAE7, 0xC87C, 0xD9F5,
+        0x3183, 0x200A, 0x1291, 0x0318, 0x77A7, 0x662E, 0x54B5, 0x453C,
+        0xBDCB, 0xAC42, 0x9ED9, 0x8F50, 0xFBEF, 0xEA66, 0xD8FD, 0xC974,
+        0x4204, 0x538D, 0x6116, 0x709F, 0x0420, 0x15A9, 0x2732, 0x36BB,
+        0xCE4C, 0xDFC5, 0xED5E, 0xFCD7, 0x8868, 0x99E1, 0xAB7A, 0xBAF3,
+        0x5285, 0x430C, 0x7197, 0x601E, 0x14A1, 0x0528, 0x37B3, 0x263A,
+        0xDECD, 0xCF44, 0xFDDF, 0xEC56, 0x98E9, 0x8960, 0xBBFB, 0xAA72,
+        0x6306, 0x728F, 0x4014, 0x519D, 0x2522, 0x34AB, 0x0630, 0x17B9,
+        0xEF4E, 0xFEC7, 0xCC5C, 0xDDD5, 0xA96A, 0xB8E3, 0x8A78, 0x9BF1,
+        0x7387, 0x620E, 0x5095, 0x411C, 0x35A3, 0x242A, 0x16B1, 0x0738,
+        0xFFCF, 0xEE46, 0xDCDD, 0xCD54, 0xB9EB, 0xA862, 0x9AF9, 0x8B70,
+        0x8408, 0x9581, 0xA71A, 0xB693, 0xC22C, 0xD3A5, 0xE13E, 0xF0B7,
+        0x0840, 0x19C9, 0x2B52, 0x3ADB, 0x4E64, 0x5FED, 0x6D76, 0x7CFF,
+        0x9489, 0x8500, 0xB79B, 0xA612, 0xD2AD, 0xC324, 0xF1BF, 0xE036,
+        0x18C1, 0x0948, 0x3BD3, 0x2A5A, 0x5EE5, 0x4F6C, 0x7DF7, 0x6C7E,
+        0xA50A, 0xB483, 0x8618, 0x9791, 0xE32E, 0xF2A7, 0xC03C, 0xD1B5,
+        0x2942, 0x38CB, 0x0A50, 0x1BD9, 0x6F66, 0x7EEF, 0x4C74, 0x5DFD,
+        0xB58B, 0xA402, 0x9699, 0x8710, 0xF3AF, 0xE226, 0xD0BD, 0xC134,
+        0x39C3, 0x284A, 0x1AD1, 0x0B58, 0x7FE7, 0x6E6E, 0x5CF5, 0x4D7C,
+        0xC60C, 0xD785, 0xE51E, 0xF497, 0x8028, 0x91A1, 0xA33A, 0xB2B3,
+        0x4A44, 0x5BCD, 0x6956, 0x78DF, 0x0C60, 0x1DE9, 0x2F72, 0x3EFB,
+        0xD68D, 0xC704, 0xF59F, 0xE416, 0x90A9, 0x8120, 0xB3BB, 0xA232,
+        0x5AC5, 0x4B4C, 0x79D7, 0x685E, 0x1CE1, 0x0D68, 0x3FF3, 0x2E7A,
+        0xE70E, 0xF687, 0xC41C, 0xD595, 0xA12A, 0xB0A3, 0x8238, 0x93B1,
+        0x6B46, 0x7ACF, 0x4854, 0x59DD, 0x2D62, 0x3CEB, 0x0E70, 0x1FF9,
+        0xF78F, 0xE606, 0xD49D, 0xC514, 0xB1AB, 0xA022, 0x92B9, 0x8330,
+        0x7BC7, 0x6A4E, 0x58D5, 0x495C, 0x3DE3, 0x2C6A, 0x1EF1, 0x0F78,
+    )
+
+    fun crc8(buf: ByteArray, len: Int): Int {
+        var crc = 0x77
+        for (i in 0 until len) crc = CRC8[(crc xor buf[i].toInt()) and 0xff]
+        return crc
+    }
+
+    fun crc16(buf: ByteArray, len: Int): Int {
+        var crc = 0x3692
+        for (i in 0 until len) crc = CRC16[(crc xor buf[i].toInt()) and 0xff] xor (crc ushr 8)
+        return crc and 0xffff
+    }
+
+    fun packet(cmd: Int, type: Int, payload: ByteArray = ByteArray(0), seq: Int = 0): ByteArray {
+        val len = 11 + payload.size
+        val b = ByteArray(len)
+        b[0] = 0xCC.toByte()
+        b[1] = ((len shl 3) and 0xff).toByte()
+        b[2] = ((len shl 3) ushr 8).toByte()
+        b[3] = crc8(b, 3).toByte()
+        b[4] = type.toByte()
+        b[5] = (cmd and 0xff).toByte()
+        b[6] = (cmd ushr 8).toByte()
+        b[7] = (seq and 0xff).toByte()
+        b[8] = ((seq ushr 8) and 0xff).toByte()
+        payload.copyInto(b, 9)
+        val c = crc16(b, len - 2)
+        b[len - 2] = (c and 0xff).toByte()
+        b[len - 1] = (c ushr 8).toByte()
+        return b
+    }
+
+    /** "conn_req:" + port vidéo en little-endian. */
+    fun connReq(): ByteArray =
+        "conn_req:".toByteArray(Charsets.US_ASCII) +
+            byteArrayOf((VIDEO_PORT and 0xff).toByte(), (VIDEO_PORT ushr 8).toByte())
+
+    fun emergency(): ByteArray = "emergency".toByteArray(Charsets.US_ASCII)
+
+    private fun axis(v: Float): Long = ((1024 + 660.0 * v.coerceIn(-1f, 1f)).toInt() and 0x7ff).toLong()
+
+    /**
+     * Commande des sticks. Valeurs dans -1..1.
+     * roll = droite +, pitch = avant +, throttle = haut +, yaw = horaire +.
+     */
+    fun stick(
+        roll: Float, pitch: Float, throttle: Float, yaw: Float, fast: Boolean,
+        hour: Int, minute: Int, second: Int, millis: Int,
+    ): ByteArray {
+        val packed = axis(roll) or (axis(pitch) shl 11) or (axis(throttle) shl 22) or
+            (axis(yaw) shl 33) or ((if (fast) 1L else 0L) shl 44)
+        val p = ByteArray(11)
+        for (i in 0 until 6) p[i] = ((packed ushr (8 * i)) and 0xff).toByte()
+        p[6] = hour.toByte()
+        p[7] = minute.toByte()
+        p[8] = second.toByte()
+        p[9] = (millis and 0xff).toByte()
+        p[10] = ((millis ushr 8) and 0xff).toByte()
+        return packet(STICK_CMD, 0x60, p, 0)
+    }
+
+    fun timePayload(hour: Int, minute: Int, second: Int, millis: Int): ByteArray {
+        fun le(v: Int) = byteArrayOf((v and 0xff).toByte(), ((v ushr 8) and 0xff).toByte())
+        return byteArrayOf(0) + le(hour) + le(minute) + le(second) + le(millis and 0xff) + le((millis ushr 8) and 0xff)
+    }
+
+    fun u16(b: ByteArray, i: Int): Int = (b[i].toInt() and 0xff) or ((b[i + 1].toInt() and 0xff) shl 8)
+    fun s16(b: ByteArray, i: Int): Int = u16(b, i).toShort().toInt()
+    fun u32(b: ByteArray, i: Int): Long =
+        (u16(b, i).toLong()) or (u16(b, i + 2).toLong() shl 16)
+    fun f32(b: ByteArray, i: Int): Float = java.lang.Float.intBitsToFloat(u32(b, i).toInt())
+}
+
+/** Télémétrie envoyée par le drone ~10 fois par seconde (commande 0x0056). */
+class FlightData(d: ByteArray, o: Int) {
+    val heightDm = Protocol.s16(d, o)               // décimètres
+    val northSpeed = Protocol.s16(d, o + 2)          // dm/s
+    val eastSpeed = Protocol.s16(d, o + 4)
+    val verticalSpeed = Protocol.s16(d, o + 6)
+    val flyTime = Protocol.s16(d, o + 8)
+    val imuOk = (d[o + 10].toInt() and 0x01) != 0
+    val downVisualOk = (d[o + 10].toInt() and 0x04) != 0
+    val windWarning = (d[o + 10].toInt() and 0x80) != 0
+    val battery = d[o + 12].toInt() and 0xff
+    val flying = (d[o + 17].toInt() and 0x01) != 0      // em_sky
+    val onGround = (d[o + 17].toInt() and 0x02) != 0    // em_ground
+    val motorsOn = (d[o + 17].toInt() and 0x04) != 0    // em_open
+    val hovering = (d[o + 17].toInt() and 0x08) != 0
+    val batteryLow = (d[o + 17].toInt() and 0x20) != 0
+    val batteryLower = (d[o + 17].toInt() and 0x40) != 0
+    val flyMode = d[o + 18].toInt() and 0xff
+    val throwFlyTimer = d[o + 19].toInt() and 0xff
+    val overheat = (d[o + 23].toInt() and 0x01) != 0
+
+    val heightM get() = heightDm / 10f
+    val horizontalSpeed get() = sqrt((northSpeed * northSpeed + eastSpeed * eastSpeed).toFloat()) / 10f
+
+    companion object {
+        const val MIN_SIZE = 24
+    }
+}
+
+/** Attitude issue des journaux IMU (commande 0x1051), en degrés. */
+data class Attitude(val pitch: Float, val roll: Float, val yaw: Float)
+
+object LogParser {
+    private const val ID_IMU_ATTI = 2048
+
+    /** data = contenu du paquet à partir de l'octet 10 (après l'octet de compteur), CRC inclus. */
+    fun parseAttitude(d: ByteArray, start: Int, end: Int): Attitude? {
+        var pos = start
+        var result: Attitude? = null
+        while (pos < end - 2) {
+            if (d[pos].toInt() and 0xff != 0x55) return result
+            val length = Protocol.s16(d, pos + 1)
+            if (length < 12 || pos + length > end) return result
+            val id = Protocol.u16(d, pos + 4)
+            if (id == ID_IMU_ATTI && length - 12 >= 64) {
+                val xor = d[pos + 6]
+                val p = ByteArray(length - 12) { (d[pos + 10 + it].toInt() xor xor.toInt()).toByte() }
+                val q0 = Protocol.f32(p, 48).toDouble()
+                val q1 = Protocol.f32(p, 52).toDouble()
+                val q2 = Protocol.f32(p, 56).toDouble()
+                val q3 = Protocol.f32(p, 60).toDouble()
+                val roll = Math.toDegrees(atan2(2 * (q0 * q1 + q2 * q3), 1 - 2 * (q1 * q1 + q2 * q2)))
+                val sinp = (2 * (q0 * q2 - q3 * q1)).coerceIn(-1.0, 1.0)
+                val pitch = Math.toDegrees(asin(sinp))
+                val yaw = Math.toDegrees(atan2(2 * (q0 * q3 + q1 * q2), 1 - 2 * (q2 * q2 + q3 * q3)))
+                if (!roll.isNaN() && !pitch.isNaN() && !yaw.isNaN()) {
+                    result = Attitude(pitch.toFloat(), roll.toFloat(), yaw.toFloat())
+                }
+            }
+            pos += length
+        }
+        return result
+    }
+}

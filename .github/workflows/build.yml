@@ -23,6 +23,9 @@ jobs:
         with:
           gradle-version: "8.7"
 
+      - name: Tests du protocole
+        run: gradle :app:testDebugUnitTest --no-daemon
+
       - name: Compiler l'APK
         run: gradle :app:assembleDebug --no-daemon
 
