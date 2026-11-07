@@ -28,9 +28,16 @@ import android.view.WindowManager
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
+import android.view.inputmethod.InputMethodManager
+import com.vincent.tellopilot.ai.D1Client
+import com.vincent.tellopilot.ai.LlamaServer
+import com.vincent.tellopilot.ai.ModelStore
+import com.vincent.tellopilot.ai.Navigator
 import com.vincent.tellopilot.drone.Attitude
 import com.vincent.tellopilot.drone.FlightData
 import com.vincent.tellopilot.drone.TelloDrone
+import com.vincent.tellopilot.ui.AiHud
+import com.vincent.tellopilot.ui.AiPanel
 import com.vincent.tellopilot.ui.FlightMode
 import com.vincent.tellopilot.ui.GlassButton
 import com.vincent.tellopilot.ui.HorizonView
@@ -54,6 +61,8 @@ import java.io.FileOutputStream
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.sign
@@ -115,6 +124,19 @@ class MainActivity : Activity(), TelloDrone.Listener, VideoPipeline.Listener {
     private var ezLastYaw: Float? = null
     private var ezStartedRec = false
 
+    // Pilote IA : d1-2B exécuté localement par llama.cpp
+    private enum class EngineState { OFF, STARTING, READY, FAILED }
+    private lateinit var models: ModelStore
+    private lateinit var llama: LlamaServer
+    private lateinit var navigator: Navigator
+    private lateinit var aiHud: AiHud
+    private var aiPanel: AiPanel? = null
+    private var engineState = EngineState.OFF
+    private var engineMessage = ""
+    private var aiDryRun = false
+    private val presets = listOf("Va vers la porte", "Approche-toi de la personne", "Tourne jusqu'à voir une fenêtre",
+        "Monte et regarde la table", "Va vers l'objet rouge")
+
     // ================================================================ cycle de vie
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -128,6 +150,10 @@ class MainActivity : Activity(), TelloDrone.Listener, VideoPipeline.Listener {
         prefs = Prefs(this)
         drone = TelloDrone(applicationContext, this)
         video = VideoPipeline(this)
+        models = ModelStore(this)
+        llama = LlamaServer(this, models)
+        navigator = Navigator(drone, D1Client(llama.port), ::aiFrame,
+            { Prefs.ALT_LIMITS[prefs.altLimit.coerceIn(0, Prefs.ALT_LIMITS.size - 1)].toFloat() }, navListener)
         applyPrefs()
         setContentView(buildUi())
         hideSystemBars()
@@ -148,6 +174,7 @@ class MainActivity : Activity(), TelloDrone.Listener, VideoPipeline.Listener {
 
     override fun onStop() {
         super.onStop()
+        if (navigator.running) navigator.abort("Pilote IA arrêté (app en arrière-plan)")
         stopEz(true)
         if (recorder != null) stopRecording()
         // Sécurité : si l'app passe en arrière-plan pendant le vol, on atterrit.
@@ -159,6 +186,7 @@ class MainActivity : Activity(), TelloDrone.Listener, VideoPipeline.Listener {
         ui.removeCallbacksAndMessages(null)
         drone.stop()
         video.stop()
+        llama.stop()
     }
 
     @Deprecated("Deprecated in Java")
@@ -272,6 +300,8 @@ class MainActivity : Activity(), TelloDrone.Listener, VideoPipeline.Listener {
             }
         }
         shutter = ShutterButton(this).apply { setOnClickListener { onShutter() } }
+        val btnAi = GlassButton(this, Icon.AI).apply { setOnClickListener { openAi() } }
+        rightCol.addView(btnAi, LinearLayout.LayoutParams(dp(50), dp(50)).apply { bottomMargin = dp(16) })
         rightCol.addView(modeSwitch, LinearLayout.LayoutParams(dp(42), dp(84)).apply { bottomMargin = dp(16) })
         rightCol.addView(shutter, LinearLayout.LayoutParams(dp(70), dp(70)))
         hud.addView(rightCol, FrameLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT, Gravity.TOP or Gravity.END).apply {
@@ -332,6 +362,13 @@ class MainActivity : Activity(), TelloDrone.Listener, VideoPipeline.Listener {
         }
         hud.addView(slideBox, FrameLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply {
             bottomMargin = dp(28)
+        })
+
+        aiHud = AiHud(this) {
+            if (navigator.running) navigator.abort("Pilote IA arrêté") else hideAiHud()
+        }.apply { visibility = View.GONE }
+        hud.addView(aiHud, FrameLayout.LayoutParams(dp(380), WRAP_CONTENT, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply {
+            bottomMargin = dp(18)
         })
 
         flash = View(this).apply { setBackgroundColor(Color.WHITE); alpha = 0f; isClickable = false }
@@ -469,6 +506,11 @@ class MainActivity : Activity(), TelloDrone.Listener, VideoPipeline.Listener {
 
     private fun onSticks(lx: Float, ly: Float, rx: Float, ry: Float) {
         val sl = shape(lx); val sly = shape(ly); val sr = shape(rx); val sry = shape(ry)
+        if (navigator.running) {
+            if (maxOf(abs(sl), abs(sly), abs(sr), abs(sry)) > 0.35f) {
+                navigator.abort("Tu as repris la main")
+            } else return
+        }
         if (ez != null) {
             if (maxOf(abs(sl), abs(sly), abs(sr), abs(sry)) > 0.35f) {
                 stopEz(true)
@@ -529,6 +571,7 @@ class MainActivity : Activity(), TelloDrone.Listener, VideoPipeline.Listener {
     // ================================================================ modes de vol
 
     private fun startMode(m: FlightMode) {
+        if (m == FlightMode.AI) { openAi(); return }
         if (!connected()) { toast("Connecte d'abord le Tello", Hud.AMBER); return }
         val f = fd
         val flying = drone.flying
@@ -560,6 +603,7 @@ class MainActivity : Activity(), TelloDrone.Listener, VideoPipeline.Listener {
                 if (!flying) { toast("Décolle d'abord", Hud.AMBER); return }
                 startEz(m)
             }
+            FlightMode.AI -> openAi()
         }
     }
 
@@ -573,6 +617,7 @@ class MainActivity : Activity(), TelloDrone.Listener, VideoPipeline.Listener {
     private fun hideModeBar() { modeBar.visibility = View.GONE }
 
     private fun stopActiveMode() {
+        if (navigator.running) navigator.abort("Pilote IA arrêté")
         if (sticks.flipMode) exitFlipMode()
         if (bounceOn) { bounceOn = false; drone.bounce(false) }
         if (ez != null) stopEz(true)
@@ -656,6 +701,153 @@ class MainActivity : Activity(), TelloDrone.Listener, VideoPipeline.Listener {
             ui.postDelayed({ if (recorder != null) stopRecording() }, if (cancelled) 0L else 1200L)
         }
         if (!cancelled) toast("Séquence terminée et filmée")
+    }
+
+    // ================================================================ pilote IA
+
+    private fun openAi() {
+        val p = AiPanel(this, presets, onClose = ::closePanel)
+        aiPanel = p
+        p.primary.setOnClickListener { onAiPrimary() }
+        p.analyze.setOnClickListener { launchAi(true) }
+        p.launch.setOnClickListener { launchAi(false) }
+        p.input.setOnEditorActionListener { v, _, _ -> hideKeyboard(v); true }
+        // en haut de l'écran : le clavier ne cache pas la consigne
+        openPanel(p, Gravity.TOP or Gravity.CENTER_HORIZONTAL, dp(560), WRAP_CONTENT)
+        refreshAi()
+        ui.removeCallbacks(aiRefresher)
+        ui.postDelayed(aiRefresher, 1000)
+    }
+
+    private val aiRefresher = object : Runnable {
+        override fun run() {
+            val p = aiPanel ?: return
+            if (!p.isAttachedToWindow || panel == null) { aiPanel = null; return }
+            refreshAi()
+            ui.postDelayed(this, 1000)
+        }
+    }
+
+    private fun refreshAi() {
+        val p = aiPanel ?: return
+        fun show(text: String, bar: Boolean, primary: String?, form: Boolean) {
+            p.status.text = text
+            p.bar.visibility = if (bar) View.VISIBLE else View.GONE
+            p.primary.visibility = if (primary != null) View.VISIBLE else View.GONE
+            if (primary != null) p.primary.text = primary
+            p.showForm(form)
+        }
+        if (!llama.binary.exists()) { show("Le moteur IA est absent de cette version de l'app.", false, null, false); return }
+        val pr = models.progress()
+        when {
+            !models.ready() && pr.active -> {
+                val pct = (100.0 * pr.done / pr.total).toInt()
+                show(if (pr.waitingForWifi) "Téléchargement en pause : en attente d'un Wi-Fi avec Internet ($pct %)"
+                     else "Téléchargement du modèle d1-2B… $pct %  (${pr.done / 1_000_000} / ${pr.total / 1_000_000} Mo)",
+                    true, null, false)
+                p.bar.indeterminate = false
+                p.bar.progress = pr.done.toFloat() / pr.total
+            }
+            !models.ready() -> show(
+                if (pr.failed) "Le téléchargement a échoué. Réessaie sur un Wi-Fi avec Internet."
+                else "Le modèle d1-2B (1,3 Go) se télécharge une seule fois, sur un Wi-Fi avec Internet (pas celui du drone).",
+                false, "TÉLÉCHARGER LE MODÈLE", false)
+            engineState == EngineState.OFF -> { startEngine(); return }
+            engineState == EngineState.STARTING -> {
+                show(engineMessage, true, null, true)
+                p.bar.indeterminate = true
+            }
+            engineState == EngineState.READY -> show("●  Moteur IA prêt · d1-2B tourne sur ton téléphone", false, null, true)
+            else -> show("Le moteur IA n'a pas démarré : $engineMessage", false, "RÉESSAYER", false)
+        }
+    }
+
+    private fun onAiPrimary() {
+        if (!models.ready()) {
+            models.download()
+            toast("Téléchargement lancé (suivi dans les notifications)")
+        } else {
+            engineState = EngineState.OFF
+            startEngine()
+        }
+        refreshAi()
+    }
+
+    private fun startEngine() {
+        if (engineState == EngineState.STARTING) return
+        engineState = EngineState.STARTING
+        engineMessage = "Démarrage du moteur IA…"
+        refreshAi()
+        Thread {
+            val ok = llama.start { msg -> ui.post { engineMessage = msg; refreshAi() } }
+            ui.post {
+                engineState = if (ok) EngineState.READY else EngineState.FAILED
+                refreshAi()
+            }
+        }.start()
+    }
+
+    private fun launchAi(dryRun: Boolean) {
+        val p = aiPanel ?: return
+        val text = p.input.text.toString().trim()
+        if (text.isEmpty()) { toast("Écris d'abord une consigne", Hud.AMBER); return }
+        if (engineState != EngineState.READY || !llama.running) { toast("Le moteur IA n'est pas prêt", Hud.AMBER); return }
+        if (!dryRun) {
+            if (!connected()) { toast("Connecte d'abord le Tello", Hud.AMBER); return }
+            if (!drone.flying) { toast("Décolle d'abord, ou utilise « Analyser l'image »", Hud.AMBER); return }
+        }
+        hideKeyboard(p.input)
+        closePanel()
+        stopActiveMode()
+        sticks.reset()
+        drone.centerSticks()
+        aiDryRun = dryRun
+        aiHud.begin(text, dryRun)
+        aiHud.visibility = View.VISIBLE
+        aiHud.alpha = 0f; aiHud.translationY = dp(20).toFloat()
+        aiHud.animate().alpha(1f).translationY(0f).setDuration(200).start()
+        navigator.start(text, dryRun)
+    }
+
+    private fun hideAiHud() {
+        aiHud.animate().alpha(0f).setDuration(200).withEndAction { aiHud.visibility = View.GONE }.start()
+    }
+
+    private fun hideKeyboard(v: View) {
+        (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager).hideSoftInputFromWindow(v.windowToken, 0)
+    }
+
+    /** Image envoyée à d1 : capture de la vidéo, 512 px de large. Appelée depuis le thread du pilote. */
+    private fun aiFrame(): Bitmap? {
+        val w = 512
+        val h = (w.toFloat() * video.height / max(1, video.width)).toInt()
+        var out: Bitmap? = null
+        val latch = CountDownLatch(1)
+        ui.post {
+            out = if (texture.isAvailable && noVideo.visibility != View.VISIBLE) runCatching { texture.getBitmap(w, h) }.getOrNull() else null
+            latch.countDown()
+        }
+        latch.await(2, TimeUnit.SECONDS)
+        return out
+    }
+
+    private val navListener = object : Navigator.Listener {
+        override fun onPhase(phase: Navigator.Phase, step: Int) {
+            ui.post { aiHud.phase(phase, step, aiDryRun) }
+        }
+
+        override fun onDecision(d: Navigator.Decision) {
+            ui.post { aiHud.decision(d) }
+        }
+
+        override fun onFinished(message: String, success: Boolean) {
+            ui.post {
+                drone.fastMode = prefs.fast
+                aiHud.finished(message, success)
+                toast(message, if (success) Hud.GREEN else Hud.AMBER)
+                ui.postDelayed({ if (!navigator.running) hideAiHud() }, if (aiDryRun) 9000L else 4000L)
+            }
+        }
     }
 
     // ================================================================ photo / vidéo
@@ -794,7 +986,7 @@ class MainActivity : Activity(), TelloDrone.Listener, VideoPipeline.Listener {
             status.battery = -1; status.wifi = -1
             if (flightStart == 0L) showConnectOverlay(true)
             if (recorder != null) stopRecording()
-            if (sticks.flipMode || bounceOn || ez != null) stopActiveMode()
+            if (sticks.flipMode || bounceOn || ez != null || navigator.running) stopActiveMode()
         }
         refreshWarning(force = true)
     } }

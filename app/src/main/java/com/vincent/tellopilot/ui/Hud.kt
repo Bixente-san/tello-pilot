@@ -35,7 +35,7 @@ object Hud {
         Color.red(color), Color.green(color), Color.blue(color))
 }
 
-enum class Icon { TAKEOFF, LAND, MODES, SETTINGS, PHOTO, VIDEO, CLOSE, FLIP, THROW, PALM, BOUNCE, ROTATE, UPAWAY, POWER, WIFI, CHECK }
+enum class Icon { TAKEOFF, LAND, MODES, SETTINGS, PHOTO, VIDEO, CLOSE, FLIP, THROW, PALM, BOUNCE, ROTATE, UPAWAY, POWER, WIFI, CHECK, AI }
 
 /** Icônes au trait, dessinées sur une grille 24×24. */
 object Icons {
@@ -125,6 +125,15 @@ object Icons {
                 rect.set(5f, 5.5f, 19f, 19.5f)
                 path.addArc(rect, -60f, 300f)
                 line(12f, 3f, 12f, 11f)
+            }
+            Icon.AI -> {
+                // réseau de neurones stylisé : 3 nœuds reliés à un cœur
+                line(12f, 12.5f, 12f, 5.5f); line(12f, 12.5f, 6f, 17f); line(12f, 12.5f, 18f, 17f)
+                line(12f, 5.5f, 6f, 17f); line(12f, 5.5f, 18f, 17f); line(6f, 17f, 18f, 17f)
+                path.addCircle(12f, 4f, 2f, Path.Direction.CW)
+                path.addCircle(4.8f, 18f, 2f, Path.Direction.CW)
+                path.addCircle(19.2f, 18f, 2f, Path.Direction.CW)
+                path.addCircle(12f, 12.5f, 2.6f, Path.Direction.CW)
             }
             Icon.WIFI -> {
                 rect.set(2f, 6f, 22f, 26f); path.addArc(rect, 225f, 90f)

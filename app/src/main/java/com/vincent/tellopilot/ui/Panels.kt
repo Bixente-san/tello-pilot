@@ -53,6 +53,7 @@ class Prefs(c: Context) {
 }
 
 enum class FlightMode(val title: String, val subtitle: String, val icon: Icon) {
+    AI("Pilote IA", "Donne une consigne : d1 décide en local", Icon.AI),
     THROW("Lance et vole", "Lance le drone : il se stabilise tout seul", Icon.THROW),
     PALM("Atterrissage main", "Se pose dans ta main", Icon.PALM),
     BOUNCE("Rebond", "Monte et descend au-dessus d'une surface", Icon.BOUNCE),
@@ -86,7 +87,7 @@ fun buildModesPanel(c: Context, onPick: (FlightMode) -> Unit, onClose: () -> Uni
         isClickable = true
     }
     card.addView(header(c, "MODES DE VOL", onClose))
-    val grid = GridLayout(c).apply { columnCount = 3 }
+    val grid = GridLayout(c).apply { columnCount = 4 }
     for (m in FlightMode.values()) {
         val tile = LinearLayout(c).apply {
             orientation = LinearLayout.VERTICAL
@@ -115,7 +116,7 @@ fun buildModesPanel(c: Context, onPick: (FlightMode) -> Unit, onClose: () -> Uni
             })
         }
         grid.addView(tile, GridLayout.LayoutParams().apply {
-            width = Hud.dpi(c, 168)
+            width = Hud.dpi(c, 150)
             height = Hud.dpi(c, 118)
             val m6 = Hud.dpi(c, 5)
             setMargins(m6, m6, m6, m6)
