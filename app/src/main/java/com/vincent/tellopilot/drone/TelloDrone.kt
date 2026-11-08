@@ -302,7 +302,8 @@ class TelloDrone(private val context: Context, private val listener: Listener) {
     fun takeoff() = cmd(Protocol.TAKEOFF_CMD, 0x68, ByteArray(0), retries = 4)
     fun land() = cmd(Protocol.LAND_CMD, 0x68, byteArrayOf(0), retries = 4)
     fun palmLand() = cmd(Protocol.PALM_LAND_CMD, 0x68, byteArrayOf(0), retries = 4)
-    fun throwAndGo() = cmd(Protocol.THROW_AND_GO_CMD, 0x48)
+    /** Lance et vole : les hélices tournent au ralenti ~5 s, on lance le drone, il se stabilise. */
+    fun throwAndGo() = cmd(Protocol.THROW_AND_GO_CMD, 0x48, byteArrayOf(0), retries = 2)
     /** 0 avant, 1 gauche, 2 arrière, 3 droite, 4 avant-gauche, 5 arrière-gauche, 6 arrière-droite, 7 avant-droite */
     fun flip(dir: Int) = cmd(Protocol.FLIP_CMD, 0x70, byteArrayOf(dir.toByte()))
     fun bounce(on: Boolean) = cmd(Protocol.BOUNCE_CMD, 0x68, byteArrayOf(if (on) 0x30 else 0x31), retries = 2)
@@ -311,6 +312,18 @@ class TelloDrone(private val context: Context, private val listener: Listener) {
     /** Coupe les moteurs immédiatement : le drone tombe. */
     fun emergency() {
         repeat(3) { send(Protocol.emergency()) }
+    }
+
+    /**
+     * 2e voie si le drone n'a pas obéi : on passe le drone en mode SDK texte ("command")
+     * puis on renvoie "emergency". Ne sert qu'en dernier recours (le drone est en train de tomber).
+     */
+    fun emergencySdk() {
+        Thread {
+            send("command".toByteArray(Charsets.US_ASCII))
+            SystemClock.sleep(150)
+            repeat(3) { send(Protocol.emergency()); SystemClock.sleep(50) }
+        }.start()
     }
 
     fun centerSticks() { roll = 0f; pitch = 0f; throttle = 0f; yaw = 0f }

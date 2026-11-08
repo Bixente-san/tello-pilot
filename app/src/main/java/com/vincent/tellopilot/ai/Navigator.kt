@@ -17,15 +17,15 @@ enum class AiAction(
     val roll: Float = 0f, val pitch: Float = 0f, val throttle: Float = 0f, val yaw: Float = 0f,
     val ms: Long = 0,
 ) {
-    FORWARD("forward", "Avancer", "fly forward: the goal is ahead and roughly centered, and the way is clear", pitch = 0.4f, ms = 900),
-    TURN_LEFT("turn_left", "Tourner à gauche", "rotate left in place: the goal is on the left side of the image, or is not visible and must be searched for", yaw = -0.6f, ms = 600),
-    TURN_RIGHT("turn_right", "Tourner à droite", "rotate right in place: the goal is on the right side of the image", yaw = 0.6f, ms = 600),
-    UP("up", "Monter", "climb higher", throttle = 0.5f, ms = 700),
-    DOWN("down", "Descendre", "descend lower", throttle = -0.45f, ms = 600),
-    LEFT("left", "Glisser à gauche", "slide sideways to the left without turning", roll = -0.4f, ms = 700),
-    RIGHT("right", "Glisser à droite", "slide sideways to the right without turning", roll = 0.4f, ms = 700),
-    BACK("back", "Reculer", "fly backward: the drone is too close, or an obstacle is right in front", pitch = -0.35f, ms = 700),
-    DONE("done", "Terminé", "the instruction is fulfilled: stop and hover");
+    FORWARD("forward", "Avancer", "fly forward toward the goal", pitch = 0.4f, ms = 900),
+    TURN_LEFT("turn_left", "Tourner à gauche", "turn left (goal on the left, or search)", yaw = -0.6f, ms = 600),
+    TURN_RIGHT("turn_right", "Tourner à droite", "turn right (goal on the right)", yaw = 0.6f, ms = 600),
+    UP("up", "Monter", "climb", throttle = 0.5f, ms = 700),
+    DOWN("down", "Descendre", "descend", throttle = -0.45f, ms = 600),
+    LEFT("left", "Glisser à gauche", "slide left", roll = -0.4f, ms = 700),
+    RIGHT("right", "Glisser à droite", "slide right", roll = 0.4f, ms = 700),
+    BACK("back", "Reculer", "fly backward (too close or obstacle)", pitch = -0.35f, ms = 700),
+    DONE("done", "Terminé", "goal reached, stop");
 
     companion object {
         fun of(key: String) = values().firstOrNull { it.key == key }
@@ -135,7 +135,8 @@ class Navigator(
                     finish("Consigne accomplie", true)
                     return
                 }
-                if (p < MIN_PROB || best == AiAction.DONE) {
+                val second = ranked.getOrNull(1)?.second ?: 0.0
+                if (p < MIN_PROB || p < second * MIN_LEAD || best == AiAction.DONE) {
                     unsure++
                     listener.onDecision(Decision(step + 1, ranked, null, "Hésitation (${(p * 100).toInt()} %) : nouvelle image", res.millis))
                     if (unsure >= MAX_UNSURE) { finish("d1 hésite trop : reformule la consigne", false); return }
@@ -198,18 +199,12 @@ class Navigator(
         val f = drone.lastFlight
         return JSONObject()
             .put("instruction", instruction)
-            .put("camera", "The image is the live view of the drone's forward-facing camera.")
-            .put("drone", JSONObject()
-                .put("flying", f?.flying ?: !dryRun)
-                .put("altitude_m", ((f?.heightM ?: 0f) * 10).toInt() / 10.0)
-                .put("step", step + 1))
-            .put("previous_actions", JSONArray(history.toList()))
+            .put("altitude_m", ((f?.heightM ?: 0f) * 10).toInt() / 10.0)
+            .put("last_actions", JSONArray(history.toList().takeLast(3)))
     }
 
     private fun question() = D1Client.Question.Choice(
-        "You pilot a small indoor drone using its front camera image. " +
-            "Choose the single best next action to carry out the user's instruction. " +
-            "Choose 'done' only when the instruction is clearly fulfilled.",
+        "Drone front camera view. Pick the next action to follow the instruction.",
         LinkedHashMap<String, String?>().apply { for (a in AiAction.values()) put(a.key, a.description) },
     )
 
@@ -217,7 +212,9 @@ class Navigator(
 
     companion object {
         const val MAX_STEPS = 40
-        const val MIN_PROB = 0.30
+        const val MIN_PROB = 0.22
+        /** la 1re action doit valoir au moins 1,4 fois la 2e */
+        const val MIN_LEAD = 1.4
         const val DONE_THRESHOLD = 0.50
         const val MAX_UNSURE = 3
     }

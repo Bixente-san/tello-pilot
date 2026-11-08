@@ -93,7 +93,7 @@ class DecisionBars(c: Context) : View(c) {
 }
 
 /** Panneau de mise en route du pilote IA. */
-class AiPanel(c: Context, presets: List<String>, onClose: () -> Unit) : LinearLayout(c) {
+class AiPanel(c: Context, presets: List<String>, speed: Int, onSpeed: (Int) -> Unit, onClose: () -> Unit) : LinearLayout(c) {
     val status: TextView
     val bar = ThinBar(c)
     val primary: TextView
@@ -175,6 +175,12 @@ class AiPanel(c: Context, presets: List<String>, onClose: () -> Unit) : LinearLa
         actions.addView(analyze)
         actions.addView(launch, LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { marginStart = Hud.dpi(c, 10) })
         form.addView(actions, LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { topMargin = Hud.dpi(c, 14) })
+        form.addView(TextView(c).apply {
+            text = "VITESSE IA  ·  taille de l'image analysée"
+            setTextColor(Hud.CYAN_SOFT); typeface = Hud.LABEL; textSize = 11f; letterSpacing = 0.14f
+            setPadding(0, Hud.dpi(c, 14), 0, Hud.dpi(c, 6))
+        })
+        form.addView(Segmented(c, listOf("RAPIDE", "ÉQUILIBRÉE", "PRÉCISE"), speed, onSpeed), LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         val diagRow = LinearLayout(c).apply { orientation = HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
         diag = TextView(c).apply {
             text = "TESTER LA VITESSE"

@@ -566,8 +566,24 @@ class MainActivity : Activity(), TelloDrone.Listener, VideoPipeline.Listener {
 
     private fun emergency() {
         stopActiveMode()
+        if (!connected()) { toast("Pas de drone connecté", Hud.AMBER); return }
+        val f = fd
         drone.emergency()
-        toast("MOTEURS COUPÉS", Hud.RED, 4000)
+        if (f != null && !f.flying && !f.motorsOn) {
+            toast("Arrêt envoyé, mais les moteurs étaient déjà à l'arrêt : STOP sert en vol", Hud.AMBER, 4000)
+            return
+        }
+        toast("ARRÊT D'URGENCE", Hud.RED, 2500)
+        // On vérifie dans la télémétrie que le drone a bien coupé ses moteurs.
+        ui.postDelayed({
+            val g = fd
+            if (g != null && g.flying) {
+                drone.emergencySdk()
+                toast("Le drone n'a pas obéi : 2e tentative envoyée", Hud.RED, 4000)
+            } else {
+                toast("Moteurs coupés", Hud.RED, 3000)
+            }
+        }, 1200)
     }
 
     // ================================================================ modes de vol
@@ -582,6 +598,11 @@ class MainActivity : Activity(), TelloDrone.Listener, VideoPipeline.Listener {
                 if (flying) { toast("Déjà en vol", Hud.AMBER); return }
                 drone.throwAndGo()
                 countdown(5, "LANCE DOUCEMENT LE DRONE VERS LE HAUT")
+                // Les hélices doivent se mettre à tourner au ralenti : on le vérifie dans la télémétrie.
+                ui.postDelayed({
+                    val g = fd
+                    if (g != null && g.motorsOn) toast("Hélices au ralenti : lance le drone !", Hud.GREEN, 3000)
+                }, 2000)
             }
             FlightMode.PALM -> {
                 if (!flying) { toast("Décolle d'abord", Hud.AMBER); return }
@@ -596,7 +617,7 @@ class MainActivity : Activity(), TelloDrone.Listener, VideoPipeline.Listener {
             }
             FlightMode.FLIP8D -> {
                 if (!flying) { toast("Décolle d'abord", Hud.AMBER); return }
-                if (f != null && f.battery < 50) { toast("Batterie sous 50 % : flips impossibles", Hud.AMBER); return }
+                if (f != null && f.battery < 50) toast("Batterie à ${f.battery} % : le Tello risque de refuser les flips", Hud.AMBER, 3500)
                 sticks.flipMode = true
                 drone.centerSticks()
                 showModeBar("FLIPS 8D")
@@ -633,7 +654,6 @@ class MainActivity : Activity(), TelloDrone.Listener, VideoPipeline.Listener {
 
     private fun onFlipSwipe(dir: Int) {
         val f = fd
-        if (f != null && f.battery < 50) { toast("Batterie à ${f.battery} % : le Tello refuse les flips sous 50 %", Hud.AMBER); return }
         if (SystemClock.uptimeMillis() < flipCheckUntil) return // un flip est déjà en cours
         drone.flip(dir)
         val names = arrayOf("AVANT", "GAUCHE", "ARRIÈRE", "DROITE", "AVANT-GAUCHE", "ARRIÈRE-GAUCHE", "ARRIÈRE-DROITE", "AVANT-DROITE")
@@ -655,8 +675,8 @@ class MainActivity : Activity(), TelloDrone.Listener, VideoPipeline.Listener {
         when {
             flipSamples < 5 -> toast("Flip envoyé (pas de données IMU pour le vérifier)", Hud.CYAN)
             flipPeak > 80f -> toast("Flip réussi ✓", Hud.GREEN, 2000)
-            else -> toast("Le Tello n'a pas fait le flip. Il faut plus de 50 % de batterie" +
-                (if (b != null) " (là : $b %)" else "") + ", un vol stable et 1 m d'espace libre.", Hud.AMBER, 6000)
+            b != null && b < 50 -> toast("Le Tello n'a pas fait le flip : son firmware les bloque sous 50 % de batterie (là : $b %).", Hud.AMBER, 6000)
+            else -> toast("Le Tello n'a pas fait le flip : il lui faut un vol stable et 1 m d'espace libre.", Hud.AMBER, 6000)
         }
     }
 
@@ -729,7 +749,7 @@ class MainActivity : Activity(), TelloDrone.Listener, VideoPipeline.Listener {
     // ================================================================ pilote IA
 
     private fun openAi() {
-        val p = AiPanel(this, presets, onClose = ::closePanel)
+        val p = AiPanel(this, presets, prefs.aiSpeed, onSpeed = { prefs.aiSpeed = it }, onClose = ::closePanel)
         aiPanel = p
         p.primary.setOnClickListener { onAiPrimary() }
         p.analyze.setOnClickListener { launchAi(true) }
@@ -834,6 +854,21 @@ class MainActivity : Activity(), TelloDrone.Listener, VideoPipeline.Listener {
     }
 
     private var diagRunning = false
+    @Volatile private var aiLogMark = 0L
+
+    /** Résumé des temps du moteur (encodage de l'image, passage dans le modèle) depuis `mark`. */
+    private fun engineTiming(mark: Long): String? {
+        val enc = Regex("encoded in (\\d+) ms")
+        val dec = Regex("decoded \\(batch [^)]*\\) in (\\d+) ms")
+        var e = 0; var d = 0
+        for (l in llama.logSince(mark)) {
+            enc.find(l)?.let { e += it.groupValues[1].toInt() }
+            dec.find(l)?.let { d += it.groupValues[1].toInt() }
+        }
+        if (e == 0 && d == 0) return null
+        val px = when (prefs.aiSpeed) { 0 -> 288; 2 -> 512; else -> 384 }
+        return "image $px px · encodage %.1f s · modèle %.1f s · ${llama.variant?.label ?: ""}".format(e / 1000.0, d / 1000.0)
+    }
 
     private fun runAiDiagnostic() {
         val p = aiPanel ?: return
@@ -865,7 +900,8 @@ class MainActivity : Activity(), TelloDrone.Listener, VideoPipeline.Listener {
 
     /** Image envoyée à d1 : capture de la vidéo, 512 px de large. Appelée depuis le thread du pilote. */
     private fun aiFrame(): Bitmap? {
-        val w = 512
+        // Plus l'image est petite, plus d1 décide vite (moins de calcul pour l'encoder et le modèle).
+        val w = when (prefs.aiSpeed) { 0 -> 288; 2 -> 512; else -> 384 }
         val h = (w.toFloat() * video.height / max(1, video.width)).toInt()
         var out: Bitmap? = null
         val latch = CountDownLatch(1)
@@ -879,11 +915,16 @@ class MainActivity : Activity(), TelloDrone.Listener, VideoPipeline.Listener {
 
     private val navListener = object : Navigator.Listener {
         override fun onPhase(phase: Navigator.Phase, step: Int) {
+            if (phase == Navigator.Phase.THINKING) aiLogMark = llama.logMark()
             ui.post { aiHud.phase(phase, step, aiDryRun) }
         }
 
         override fun onDecision(d: Navigator.Decision) {
-            ui.post { aiHud.decision(d) }
+            val timing = engineTiming(aiLogMark)
+            ui.post {
+                aiHud.decision(d)
+                aiHud.detail(timing)
+            }
         }
 
         override fun onFinished(message: String, success: Boolean) {

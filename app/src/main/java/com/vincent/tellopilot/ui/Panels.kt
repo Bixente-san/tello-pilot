@@ -43,6 +43,10 @@ class Prefs(c: Context) {
     var altLimit: Int
         get() = sp.getInt("altLimit", 1)
         set(v) = sp.edit().putInt("altLimit", v).apply()
+    /** 0 rapide (petite image), 1 équilibré, 2 précis (grande image) */
+    var aiSpeed: Int
+        get() = sp.getInt("aiSpeed", 1)
+        set(v) = sp.edit().putInt("aiSpeed", v).apply()
     var horizon: Boolean
         get() = sp.getBoolean("horizon", true)
         set(v) = sp.edit().putBoolean("horizon", v).apply()
@@ -179,7 +183,7 @@ fun buildSettingsPanel(c: Context, prefs: Prefs, onChange: () -> Unit, onClose: 
     row("Altitude maximale", null, Prefs.ALT_LIMITS.map { "$it m" }, prefs.altLimit) { prefs.altLimit = it }
 
     list.addView(TextView(c).apply {
-        text = "Tello Pilot 3.1 · protocole natif du Tello\nMaintiens STOP 1 s : coupe les moteurs en urgence."
+        text = "Tello Pilot 3.2 · protocole natif du Tello\nMaintiens STOP 1 s : coupe les moteurs en urgence."
         setTextColor(Hud.DIM)
         typeface = Hud.TEXT
         textSize = 11f

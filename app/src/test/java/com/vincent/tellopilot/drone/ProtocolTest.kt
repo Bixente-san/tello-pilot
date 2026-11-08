@@ -32,6 +32,11 @@ class ProtocolTest {
         hex(Protocol.stick(0.5f, -1f, 1f, 0f, true, 12, 34, 56, 789)),
     )
 
+    @Test fun throwAndGo() = assertEquals(
+        "cc600027485d00230100b9c4",
+        hex(Protocol.packet(Protocol.THROW_AND_GO_CMD, 0x48, byteArrayOf(0), 0x0123)),
+    )
+
     @Test fun connReq() = assertEquals(
         "636f6e6e5f7265713a9617",
         hex(Protocol.connReq()),
