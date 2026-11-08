@@ -35,7 +35,7 @@ object Hud {
         Color.red(color), Color.green(color), Color.blue(color))
 }
 
-enum class Icon { TAKEOFF, LAND, MODES, SETTINGS, PHOTO, VIDEO, CLOSE, FLIP, THROW, PALM, BOUNCE, ROTATE, UPAWAY, POWER, WIFI, CHECK, AI }
+enum class Icon { TAKEOFF, LAND, MODES, SETTINGS, PHOTO, VIDEO, CLOSE, FLIP, THROW, PALM, BOUNCE, ROTATE, UPAWAY, POWER, WIFI, CHECK, AI, STOP }
 
 /** Icônes au trait, dessinées sur une grille 24×24. */
 object Icons {
@@ -134,6 +134,17 @@ object Icons {
                 path.addCircle(4.8f, 18f, 2f, Path.Direction.CW)
                 path.addCircle(19.2f, 18f, 2f, Path.Direction.CW)
                 path.addCircle(12f, 12.5f, 2.6f, Path.Direction.CW)
+            }
+            Icon.STOP -> {
+                // panneau stop (octogone) + point d'exclamation
+                for (k in 0 until 8) {
+                    val a = Math.toRadians(22.5 + k * 45.0)
+                    val x = 12f + 9.5f * Math.cos(a).toFloat(); val y = 12f + 9.5f * Math.sin(a).toFloat()
+                    if (k == 0) path.moveTo(x, y) else path.lineTo(x, y)
+                }
+                path.close()
+                line(12f, 7f, 12f, 13f)
+                path.addCircle(12f, 16.6f, 0.5f, Path.Direction.CW)
             }
             Icon.WIFI -> {
                 rect.set(2f, 6f, 22f, 26f); path.addArc(rect, 225f, 90f)

@@ -44,6 +44,24 @@ class GlassButton(c: Context, icon: Icon, private val accent: Int = Hud.CYAN) : 
     private val ring = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE }
     private val glow = Paint(Paint.ANTI_ALIAS_FLAG)
 
+    /** Bouton "à maintenir" : holdMs > 0 => onHold se déclenche après un appui continu, avec anneau de progression. */
+    var holdMs = 0L
+    var onHold: (() -> Unit)? = null
+    private var holdStart = 0L
+    private var holdFired = false
+    private val holdTick = object : Runnable {
+        override fun run() {
+            if (holdStart == 0L) return
+            if (SystemClock.uptimeMillis() - holdStart >= holdMs) {
+                holdStart = 0L
+                holdFired = true
+                performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+                onHold?.invoke()
+            } else postOnAnimation(this)
+            invalidate()
+        }
+    }
+
     init {
         isClickable = true
         isHapticFeedbackEnabled = true
@@ -68,6 +86,12 @@ class GlassButton(c: Context, icon: Icon, private val accent: Int = Hud.CYAN) : 
                 cx + r * cos(a).toFloat(), cy + r * sin(a).toFloat(), ring)
         }
         Icons.draw(c, icon, cx, cy, r * 0.95f, if (active) accent else tint, dp(1.9f))
+        if (holdStart != 0L && holdMs > 0) {
+            val f = ((SystemClock.uptimeMillis() - holdStart).toFloat() / holdMs).coerceIn(0f, 1f)
+            ring.strokeWidth = dp(3.5f); ring.color = accent; ring.strokeCap = Paint.Cap.ROUND
+            c.drawArc(cx - r, cy - r, cx + r, cy + r, -90f, 360f * f, false, ring)
+            ring.strokeCap = Paint.Cap.BUTT
+        }
     }
 
     @SuppressLint("ClickableViewAccessibility")
@@ -76,7 +100,24 @@ class GlassButton(c: Context, icon: Icon, private val accent: Int = Hud.CYAN) : 
             MotionEvent.ACTION_DOWN -> animate().scaleX(0.9f).scaleY(0.9f).setDuration(80).start()
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> animate().scaleX(1f).scaleY(1f).setDuration(120).start()
         }
-        return super.onTouchEvent(e)
+        if (holdMs <= 0) return super.onTouchEvent(e)
+        when (e.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                holdFired = false
+                holdStart = SystemClock.uptimeMillis()
+                performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+                postOnAnimation(holdTick)
+            }
+            MotionEvent.ACTION_UP -> {
+                val early = holdStart != 0L && !holdFired
+                holdStart = 0L
+                removeCallbacks(holdTick)
+                invalidate()
+                if (early) performClick() // relâché trop tôt : affiche l'aide
+            }
+            MotionEvent.ACTION_CANCEL -> { holdStart = 0L; removeCallbacks(holdTick); invalidate() }
+        }
+        return true
     }
 
     override fun performClick(): Boolean {

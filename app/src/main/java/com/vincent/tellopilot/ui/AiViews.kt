@@ -100,6 +100,8 @@ class AiPanel(c: Context, presets: List<String>, onClose: () -> Unit) : LinearLa
     val input: EditText
     val analyze: TextView
     val launch: TextView
+    val diag: TextView
+    val diagText: TextView
     private val form: LinearLayout
 
     init {
@@ -173,6 +175,24 @@ class AiPanel(c: Context, presets: List<String>, onClose: () -> Unit) : LinearLa
         actions.addView(analyze)
         actions.addView(launch, LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { marginStart = Hud.dpi(c, 10) })
         form.addView(actions, LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { topMargin = Hud.dpi(c, 14) })
+        val diagRow = LinearLayout(c).apply { orientation = HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        diag = TextView(c).apply {
+            text = "TESTER LA VITESSE"
+            setTextColor(Hud.CYAN_SOFT); typeface = Hud.LABEL; textSize = 11.5f; letterSpacing = 0.12f
+            val h = Hud.dpi(c, 4); val v = Hud.dpi(c, 8)
+            setPadding(0, v, h, v)
+            isClickable = true
+        }
+        diagRow.addView(diag)
+        form.addView(diagRow, LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { topMargin = Hud.dpi(c, 6) })
+        diagText = TextView(c).apply {
+            setTextColor(Hud.WHITE); typeface = Hud.MONO; textSize = 10.5f
+            visibility = View.GONE
+            background = glassBg(c, 10f, 0x10FFFFFF, 0x22FFFFFF)
+            val p = Hud.dpi(c, 10)
+            setPadding(p, p, p, p)
+        }
+        form.addView(diagText, LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = Hud.dpi(c, 4) })
         form.addView(TextView(c).apply {
             text = "Le drone avance par petits pas : il s'immobilise, d1 regarde l'image, choisit une action, " +
                 "le drone l'exécute. Touche un joystick pour reprendre la main à tout moment."
@@ -193,6 +213,17 @@ class AiHud(c: Context, onStop: () -> Unit) : LinearLayout(c) {
     private val instruction: TextView
     private val bars = DecisionBars(c)
     private val note: TextView
+    private val detail: TextView
+    private var thinkingSince = 0L
+    private var thinkingLabel = ""
+    private val ticker = object : Runnable {
+        override fun run() {
+            if (thinkingSince == 0L) return
+            val s = (SystemClock.uptimeMillis() - thinkingSince) / 1000
+            phase.text = "$thinkingLabel D1 RÉFLÉCHIT… $s s".trim()
+            postDelayed(this, 500)
+        }
+    }
 
     init {
         orientation = HORIZONTAL
@@ -221,6 +252,12 @@ class AiHud(c: Context, onStop: () -> Unit) : LinearLayout(c) {
             visibility = View.GONE
         }
         col.addView(note)
+        detail = TextView(c).apply {
+            setTextColor(Hud.MUTED); typeface = Hud.MONO; textSize = 9.5f
+            maxLines = 3
+            visibility = View.GONE
+        }
+        col.addView(detail)
         addView(col, LayoutParams(0, WRAP_CONTENT, 1f))
         addView(GlassButton(c, Icon.CLOSE, Hud.RED).apply {
             tint = Hud.RED
@@ -233,16 +270,38 @@ class AiHud(c: Context, onStop: () -> Unit) : LinearLayout(c) {
         instruction.text = "« $text »"
         phase.text = ""
         note.visibility = View.GONE
+        detail.visibility = View.GONE
         bars.clear()
+        stopTicker()
+    }
+
+    private fun stopTicker() {
+        thinkingSince = 0L
+        removeCallbacks(ticker)
+    }
+
+    /** Extrait technique (journal du moteur) affiché sous la décision. */
+    fun detail(text: String?) {
+        detail.text = text ?: ""
+        detail.visibility = if (text.isNullOrBlank()) View.GONE else View.VISIBLE
     }
 
     fun phase(p: Navigator.Phase, step: Int, dryRun: Boolean) {
-        val s = if (dryRun) "" else "ÉTAPE $step · "
-        phase.text = s + if (p == Navigator.Phase.THINKING) "D1 RÉFLÉCHIT…" else "EXÉCUTION"
+        val s = if (dryRun) "" else "ÉTAPE $step ·"
         phase.setTextColor(if (p == Navigator.Phase.THINKING) Hud.AMBER else Hud.GREEN)
+        if (p == Navigator.Phase.THINKING) {
+            thinkingLabel = s
+            thinkingSince = SystemClock.uptimeMillis()
+            removeCallbacks(ticker)
+            ticker.run()
+        } else {
+            stopTicker()
+            phase.text = "$s EXÉCUTION".trim()
+        }
     }
 
     fun decision(d: Navigator.Decision) {
+        stopTicker()
         bars.set(d.ranked, d.executed)
         val time = "décidé en %.1f s".format(d.millis / 1000.0)
         if (d.note != null) {
@@ -256,6 +315,7 @@ class AiHud(c: Context, onStop: () -> Unit) : LinearLayout(c) {
     }
 
     fun finished(msg: String, success: Boolean) {
+        stopTicker()
         phase.text = msg.uppercase()
         phase.setTextColor(if (success) Hud.GREEN else Hud.AMBER)
     }

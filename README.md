@@ -54,7 +54,7 @@ pilote alors le drone **pas à pas** :
 - Les fichiers vont dans la Galerie, dossier `TelloPilot`.
 
 ### Sécurité
-- Un appui long sur ⏻ coupe les moteurs immédiatement : le drone tombe.
+- Maintenir le bouton STOP 1 seconde (un anneau se remplit) coupe les moteurs immédiatement : le drone tombe.
 - Si l'app passe en arrière-plan pendant le vol, le drone atterrit.
 
 ## Technique

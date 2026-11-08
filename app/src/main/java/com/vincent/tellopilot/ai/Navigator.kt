@@ -115,7 +115,7 @@ class Navigator(
                 listener.onPhase(Phase.THINKING, step + 1)
 
                 val bmp = grab() ?: run { finish("Pas d'image vidéo", false); return }
-                val image = toDataUri(bmp)
+                val image = bitmapToDataUri(bmp)
                 val res = client.ask(state(step, history, dryRun), image, mapOf("action" to question()))
                 if (aborted.get()) return
 
@@ -162,7 +162,11 @@ class Navigator(
                 step++
             }
         } catch (e: Exception) {
-            if (!aborted.get()) finish("Erreur du moteur IA : ${e.message ?: e.javaClass.simpleName}", false)
+            if (!aborted.get()) finish(when (e) {
+                is java.net.SocketTimeoutException -> "Erreur : d1 n'a pas répondu à temps"
+                is java.net.ConnectException -> "Erreur : le moteur IA ne répond plus"
+                else -> "Erreur du moteur IA : ${e.message ?: e.javaClass.simpleName}"
+            }, false)
         } finally {
             if (session === s || !aborted.get()) {
                 drone.centerSticks()
@@ -209,12 +213,6 @@ class Navigator(
         LinkedHashMap<String, String?>().apply { for (a in AiAction.values()) put(a.key, a.description) },
     )
 
-    private fun toDataUri(b: Bitmap): String {
-        val out = ByteArrayOutputStream(64 * 1024)
-        b.compress(Bitmap.CompressFormat.JPEG, 85, out)
-        return "data:image/jpeg;base64," + Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP)
-    }
-
     private fun sleep(ms: Long) = SystemClock.sleep(ms)
 
     companion object {
@@ -223,4 +221,11 @@ class Navigator(
         const val DONE_THRESHOLD = 0.50
         const val MAX_UNSURE = 3
     }
+}
+
+/** Image -> data URI JPEG, le format attendu par llama-server. */
+fun bitmapToDataUri(b: Bitmap): String {
+    val out = ByteArrayOutputStream(64 * 1024)
+    b.compress(Bitmap.CompressFormat.JPEG, 85, out)
+    return "data:image/jpeg;base64," + Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP)
 }

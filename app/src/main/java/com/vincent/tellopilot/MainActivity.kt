@@ -29,6 +29,7 @@ import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.view.inputmethod.InputMethodManager
+import com.vincent.tellopilot.ai.AiDiagnostic
 import com.vincent.tellopilot.ai.D1Client
 import com.vincent.tellopilot.ai.LlamaServer
 import com.vincent.tellopilot.ai.ModelStore
@@ -280,10 +281,11 @@ class MainActivity : Activity(), TelloDrone.Listener, VideoPipeline.Listener {
         btnFly = GlassButton(this, Icon.TAKEOFF).apply { setOnClickListener { onFlyButton() } }
         btnModes = GlassButton(this, Icon.MODES).apply { setOnClickListener { openModes() } }
         btnSettings = GlassButton(this, Icon.SETTINGS).apply { setOnClickListener { openSettings() } }
-        btnStop = GlassButton(this, Icon.POWER, Hud.RED).apply {
+        btnStop = GlassButton(this, Icon.STOP, Hud.RED).apply {
             tint = Hud.RED
-            setOnClickListener { toast("Appui long sur ⏻ : coupe les moteurs (le drone tombe)", Hud.AMBER) }
-            setOnLongClickListener { emergency(); true }
+            holdMs = 800
+            onHold = { emergency() }
+            setOnClickListener { toast("Maintiens STOP 1 seconde pour couper les moteurs (le drone tombe)", Hud.AMBER) }
         }
         fun col(v: View, size: Int, gap: Int) = leftCol.addView(v, LinearLayout.LayoutParams(dp(size), dp(size)).apply { bottomMargin = dp(gap) })
         col(btnFly, 60, 14); col(btnModes, 50, 14); col(btnSettings, 50, 22); col(btnStop, 40, 0)
@@ -631,10 +633,31 @@ class MainActivity : Activity(), TelloDrone.Listener, VideoPipeline.Listener {
 
     private fun onFlipSwipe(dir: Int) {
         val f = fd
-        if (f != null && f.battery < 50) { toast("Batterie sous 50 % : flips impossibles", Hud.AMBER); return }
+        if (f != null && f.battery < 50) { toast("Batterie à ${f.battery} % : le Tello refuse les flips sous 50 %", Hud.AMBER); return }
+        if (SystemClock.uptimeMillis() < flipCheckUntil) return // un flip est déjà en cours
         drone.flip(dir)
         val names = arrayOf("AVANT", "GAUCHE", "ARRIÈRE", "DROITE", "AVANT-GAUCHE", "ARRIÈRE-GAUCHE", "ARRIÈRE-DROITE", "AVANT-DROITE")
-        toast("Flip ${names[dir].lowercase(Locale.FRANCE)}", Hud.CYAN, 1500)
+        toast("Flip ${names[dir].lowercase(Locale.FRANCE)} envoyé…", Hud.CYAN, 1500)
+        // On vérifie avec l'IMU que le drone a vraiment basculé.
+        flipCheckUntil = SystemClock.uptimeMillis() + 2800
+        flipPeak = 0f
+        flipSamples = 0
+        ui.removeCallbacks(flipVerdict)
+        ui.postDelayed(flipVerdict, 3000)
+    }
+
+    private var flipCheckUntil = 0L
+    private var flipPeak = 0f
+    private var flipSamples = 0
+
+    private val flipVerdict = Runnable {
+        val b = fd?.battery
+        when {
+            flipSamples < 5 -> toast("Flip envoyé (pas de données IMU pour le vérifier)", Hud.CYAN)
+            flipPeak > 80f -> toast("Flip réussi ✓", Hud.GREEN, 2000)
+            else -> toast("Le Tello n'a pas fait le flip. Il faut plus de 50 % de batterie" +
+                (if (b != null) " (là : $b %)" else "") + ", un vol stable et 1 m d'espace libre.", Hud.AMBER, 6000)
+        }
     }
 
     private fun countdown(from: Int, msg: String) {
@@ -711,6 +734,7 @@ class MainActivity : Activity(), TelloDrone.Listener, VideoPipeline.Listener {
         p.primary.setOnClickListener { onAiPrimary() }
         p.analyze.setOnClickListener { launchAi(true) }
         p.launch.setOnClickListener { launchAi(false) }
+        p.diag.setOnClickListener { runAiDiagnostic() }
         p.input.setOnEditorActionListener { v, _, _ -> hideKeyboard(v); true }
         // en haut de l'écran : le clavier ne cache pas la consigne
         openPanel(p, Gravity.TOP or Gravity.CENTER_HORIZONTAL, dp(560), WRAP_CONTENT)
@@ -809,6 +833,28 @@ class MainActivity : Activity(), TelloDrone.Listener, VideoPipeline.Listener {
         navigator.start(text, dryRun)
     }
 
+    private var diagRunning = false
+
+    private fun runAiDiagnostic() {
+        val p = aiPanel ?: return
+        if (engineState != EngineState.READY || !llama.running) { toast("Le moteur IA n'est pas prêt", Hud.AMBER); return }
+        if (diagRunning || navigator.running) return
+        diagRunning = true
+        p.diagText.visibility = View.VISIBLE
+        p.diagText.text = "Test en cours… (jusqu'à 3 min si le téléphone est lent)"
+        Thread {
+            val frame = aiFrame()
+            val r = AiDiagnostic(llama, D1Client(llama.port)).run(frame)
+            ui.post {
+                diagRunning = false
+                aiPanel?.diagText?.apply {
+                    text = r.text
+                    setTextColor(if (r.ok) Hud.WHITE else Hud.AMBER)
+                }
+            }
+        }.start()
+    }
+
     private fun hideAiHud() {
         aiHud.animate().alpha(0f).setDuration(200).withEndAction { aiHud.visibility = View.GONE }.start()
     }
@@ -844,6 +890,9 @@ class MainActivity : Activity(), TelloDrone.Listener, VideoPipeline.Listener {
             ui.post {
                 drone.fastMode = prefs.fast
                 aiHud.finished(message, success)
+                if (!success && message.startsWith("Erreur")) {
+                    aiHud.detail(llama.lastLog(3).lines().joinToString("\n") { it.take(70) })
+                }
                 toast(message, if (success) Hud.GREEN else Hud.AMBER)
                 ui.postDelayed({ if (!navigator.running) hideAiHud() }, if (aiDryRun) 9000L else 4000L)
             }
@@ -1017,6 +1066,10 @@ class MainActivity : Activity(), TelloDrone.Listener, VideoPipeline.Listener {
     override fun onAttitude(att: Attitude) { ui.post {
         attitude = att
         horizon.setAttitude(att.pitch, att.roll)
+        if (SystemClock.uptimeMillis() < flipCheckUntil) {
+            flipSamples++
+            flipPeak = maxOf(flipPeak, abs(att.roll), abs(att.pitch))
+        }
     } }
 
     override fun onPhoto(jpeg: ByteArray) {

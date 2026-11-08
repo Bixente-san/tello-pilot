@@ -112,27 +112,95 @@ class ModelStore(private val context: Context) {
     }
 }
 
-/** Le binaire llama-server embarqué, lancé comme processus local. */
+/**
+ * Le binaire llama-server embarqué, lancé comme processus local.
+ *
+ * L'APK contient 3 variantes compilées pour des niveaux de processeur différents ; on prend
+ * la plus rapide que le téléphone supporte (lu dans /proc/cpuinfo), avec repli automatique
+ * sur la suivante si elle plante au démarrage.
+ */
 class LlamaServer(private val context: Context, private val store: ModelStore) {
     val port = 18080
     @Volatile private var process: Process? = null
-    private val log = ArrayDeque<String>()
+    private val log = ArrayList<String>()
+    private var logCount = 0L
 
-    val binary: File get() = File(context.applicationInfo.nativeLibraryDir, "libllamaserver.so")
+    class Variant(val id: String, val file: String, val label: String)
+
+    private val variants = listOf(
+        Variant("i8mm", "libllamaserver_i8mm.so", "ARMv8.6 i8mm"),
+        Variant("dotprod", "libllamaserver_dotprod.so", "ARMv8.2 dotprod"),
+        Variant("base", "libllamaserver.so", "ARMv8 générique"),
+    )
+
+    private fun fileOf(v: Variant) = File(context.applicationInfo.nativeLibraryDir, v.file)
+
+    /** Variante de secours, toujours présente. */
+    val binary: File get() = fileOf(variants.last())
+
+    @Volatile var variant: Variant? = null; private set
+    val threads: Int by lazy { bigCores() }
 
     val running get() = process?.isAlive == true
 
+    /** Caractéristiques du processeur, lues dans /proc/cpuinfo (ex. asimddp = dotprod). */
+    val cpuFeatures: Set<String> by lazy {
+        try {
+            File("/proc/cpuinfo").readLines()
+                .filter { it.startsWith("Features") }
+                .flatMap { it.substringAfter(':').trim().split(Regex("\\s+")) }
+                .toSet()
+        } catch (_: Exception) { emptySet() }
+    }
+
+    private fun supported(v: Variant): Boolean = when (v.id) {
+        "i8mm" -> "i8mm" in cpuFeatures && "asimddp" in cpuFeatures && "asimdhp" in cpuFeatures
+        "dotprod" -> "asimddp" in cpuFeatures && "asimdhp" in cpuFeatures
+        else -> true
+    }
+
+    /** Nombre de cœurs "performance" : on évite les petits cœurs, qui ralentissent tout le calcul. */
+    private fun bigCores(): Int {
+        val freqs = (0 until Runtime.getRuntime().availableProcessors()).mapNotNull { i ->
+            try { File("/sys/devices/system/cpu/cpu$i/cpufreq/cpuinfo_max_freq").readText().trim().toLong() } catch (_: Exception) { null }
+        }
+        if (freqs.size < 2) return 4
+        val min = freqs.minOrNull() ?: return 4
+        val big = freqs.count { it > min }
+        return big.coerceIn(2, 6)
+    }
+
+    /** Lignes de journal du moteur depuis la position `since` (voir logMark). */
+    fun logMark(): Long = synchronized(log) { logCount }
+    fun logSince(mark: Long): List<String> = synchronized(log) {
+        val n = (logCount - mark).coerceIn(0, log.size.toLong()).toInt()
+        log.takeLast(n)
+    }
     fun lastLog(n: Int = 12): String = synchronized(log) { log.takeLast(n).joinToString("\n") }
 
     /** Démarre le serveur et attend qu'il ait chargé le modèle. Bloquant. */
     fun start(onStatus: (String) -> Unit): Boolean {
         if (running && healthy()) return true
         stop()
-        if (!binary.exists()) { onStatus("Moteur IA absent de cette version de l'app"); return false }
         if (!store.ready()) { onStatus("Modèle non téléchargé"); return false }
-        val threads = Runtime.getRuntime().availableProcessors().let { if (it >= 8) 4 else (it / 2).coerceAtLeast(2) }
+        val candidates = variants.filter { fileOf(it).exists() && supported(it) }
+        if (candidates.isEmpty()) { onStatus("Moteur IA absent de cette version de l'app"); return false }
+        for (v in candidates) {
+            when (tryStart(v, onStatus)) {
+                Outcome.OK -> { variant = v; onStatus("Moteur IA prêt"); return true }
+                Outcome.CRASHED -> onStatus("La variante ${v.label} a planté, essai suivant…")
+                Outcome.FAILED -> return false
+            }
+        }
+        onStatus("Le moteur s'est arrêté :\n${lastLog(4)}")
+        return false
+    }
+
+    private enum class Outcome { OK, CRASHED, FAILED }
+
+    private fun tryStart(v: Variant, onStatus: (String) -> Unit): Outcome {
         val cmd = listOf(
-            binary.absolutePath,
+            fileOf(v).absolutePath,
             "-m", store.model.absolutePath,
             "--mmproj", store.mmproj.absolutePath,
             "--host", "127.0.0.1", "--port", "$port",
@@ -141,31 +209,40 @@ class LlamaServer(private val context: Context, private val store: ModelStore) {
             "--image-max-tokens", "256",
             "--no-webui",
         )
-        onStatus("Démarrage du moteur IA…")
+        onStatus("Démarrage du moteur IA (${v.label}, $threads cœurs)…")
         val p = try {
             ProcessBuilder(cmd).redirectErrorStream(true).directory(context.filesDir).start()
         } catch (e: Exception) {
-            onStatus("Impossible de lancer le moteur : ${e.message}"); return false
+            onStatus("Impossible de lancer le moteur : ${e.message}"); return Outcome.FAILED
         }
         process = p
         Thread {
             try {
                 p.inputStream.bufferedReader().forEachLine { line ->
-                    synchronized(log) { log.addLast(line); while (log.size > 200) log.removeFirst() }
+                    synchronized(log) {
+                        log.add(line); logCount++
+                        if (log.size > 400) log.subList(0, log.size - 300).clear()
+                    }
                 }
             } catch (_: Exception) {}
         }.apply { isDaemon = true; start() }
 
-        onStatus("Chargement du modèle d1-2B…")
-        val deadline = SystemClock.uptimeMillis() + 120_000
-        while (SystemClock.uptimeMillis() < deadline) {
-            if (!p.isAlive) { onStatus("Le moteur s'est arrêté :\n${lastLog(4)}"); return false }
-            if (healthy()) { onStatus("Moteur IA prêt"); return true }
-            SystemClock.sleep(500)
+        onStatus("Chargement du modèle d1-2B (${v.label})…")
+        val t0 = SystemClock.uptimeMillis()
+        while (SystemClock.uptimeMillis() - t0 < 120_000) {
+            if (!p.isAlive) {
+                // Plantage immédiat = instruction non supportée (SIGILL = 132) : on essaie la variante suivante.
+                val code = runCatching { p.exitValue() }.getOrDefault(-1)
+                process = null
+                return if (SystemClock.uptimeMillis() - t0 < 15_000 || code == 132 || code == 4) Outcome.CRASHED
+                else { onStatus("Le moteur s'est arrêté (code $code) :\n${lastLog(4)}"); Outcome.FAILED }
+            }
+            if (healthy()) return Outcome.OK
+            SystemClock.sleep(400)
         }
         onStatus("Le moteur ne répond pas")
         stop()
-        return false
+        return Outcome.FAILED
     }
 
     fun healthy(): Boolean = try {
@@ -216,7 +293,7 @@ class D1Client(private val port: Int) {
         c.requestMethod = "POST"
         c.doOutput = true
         c.connectTimeout = 2000
-        c.readTimeout = 60_000
+        c.readTimeout = 180_000
         c.setRequestProperty("Content-Type", "application/json")
         c.outputStream.use { it.write(body.toString().toByteArray()) }
         val code = c.responseCode

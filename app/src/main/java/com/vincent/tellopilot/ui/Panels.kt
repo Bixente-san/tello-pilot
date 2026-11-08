@@ -179,7 +179,7 @@ fun buildSettingsPanel(c: Context, prefs: Prefs, onChange: () -> Unit, onClose: 
     row("Altitude maximale", null, Prefs.ALT_LIMITS.map { "$it m" }, prefs.altLimit) { prefs.altLimit = it }
 
     list.addView(TextView(c).apply {
-        text = "Tello Pilot 2.0 · protocole natif du Tello\nAppui long sur ⏻ : coupe les moteurs en urgence."
+        text = "Tello Pilot 3.1 · protocole natif du Tello\nMaintiens STOP 1 s : coupe les moteurs en urgence."
         setTextColor(Hud.DIM)
         typeface = Hud.TEXT
         textSize = 11f
