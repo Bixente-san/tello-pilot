@@ -216,14 +216,6 @@ class AiHud(c: Context, onStop: () -> Unit) : LinearLayout(c) {
     private val detail: TextView
     private var thinkingSince = 0L
     private var thinkingLabel = ""
-    private val ticker = object : Runnable {
-        override fun run() {
-            if (thinkingSince == 0L) return
-            val s = (SystemClock.uptimeMillis() - thinkingSince) / 1000
-            phase.text = "$thinkingLabel D1 RÉFLÉCHIT… $s s".trim()
-            postDelayed(this, 500)
-        }
-    }
 
     init {
         orientation = HORIZONTAL
@@ -263,6 +255,16 @@ class AiHud(c: Context, onStop: () -> Unit) : LinearLayout(c) {
             tint = Hud.RED
             setOnClickListener { onStop() }
         }, LayoutParams(Hud.dpi(c, 46), Hud.dpi(c, 46)).apply { marginStart = Hud.dpi(c, 10) })
+    }
+
+    // déclaré après le bloc init : "phase" est alors initialisé
+    private val ticker = object : Runnable {
+        override fun run() {
+            if (thinkingSince == 0L) return
+            val s = (SystemClock.uptimeMillis() - thinkingSince) / 1000
+            phase.text = "$thinkingLabel D1 RÉFLÉCHIT… $s s".trim()
+            postDelayed(this, 500)
+        }
     }
 
     fun begin(text: String, dryRun: Boolean) {
